@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hodgeguard-mcp"
+version = "0.2.0"
+description = "Zero-Knowledge MCP Circuit-Breaker Client for Autonomous Coding Agents (OpenCode, Claude Code, Cursor)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "Rajeev Prakash Nath"}]
+dependencies = []
+
+[project.scripts]
+hodgeguard-mcp = "hodgeguard_mcp.client:main"
