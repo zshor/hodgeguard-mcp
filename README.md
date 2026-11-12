@@ -37,4 +37,4 @@ To use HodgeGuard with your Model Context Protocol (MCP) client, add it to your 
 
 ### Support Development (Buy Me a Coffee)
 HodgeGuard provisions a free tier locally automatically. To unlock unlimited Pro usage and support the developer, buy me a coffee!
-☕ **[Buy Me a Coffee — HodgeGuard Pro](https://buymeacoffee.com/yourusername)**
+☕ **[Buy Me a Coffee — HodgeGuard Pro](https://buymeacoffee.com/zshor)**

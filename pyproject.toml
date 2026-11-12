@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hodgeguard-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "Zero-Knowledge MCP Circuit-Breaker Client for Autonomous Coding Agents (OpenCode, Claude Code, Cursor)"
 readme = "README.md"
 requires-python = ">=3.9"
