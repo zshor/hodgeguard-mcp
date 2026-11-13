@@ -15,7 +15,7 @@ import urllib.error
 import uuid
 from typing import Optional
 
-API_URL = os.environ.get("HODGEGUARD_API_URL", "https://hodgeguard-brain-api.fly.dev")
+API_URL = os.environ.get("HODGEGUARD_API_URL", "https://hodgeguard-cloud-brain.onrender.com")
 
 
 def get_default_anon_key() -> str:
@@ -65,11 +65,12 @@ def call_cloud_brain(endpoint: str, payload: dict) -> dict:
         headers={
             "Content-Type": "application/json",
             "X-HodgeGuard-Key": API_KEY,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) HodgeGuard-MCP/0.2.1",
         },
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=3.0) as resp:
+        with urllib.request.urlopen(req, timeout=10.0) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         return json.loads(e.read().decode("utf-8"))
@@ -89,7 +90,7 @@ def handle_rpc(request: dict) -> Optional[dict]:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "hodgeguard-mcp", "version": "0.2.0"},
+                "serverInfo": {"name": "hodgeguard-mcp", "version": "0.2.1"},
             },
         }
     elif method == "notifications/initialized":
