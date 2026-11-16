@@ -1,25 +1,18 @@
 # HodgeGuard MCP (`hodgeguard-mcp`)
 
-[![PyPI version](https://img.shields.io/pypi/v/hodgeguard-mcp.svg)](https://pypi.org/project/hodgeguard-mcp/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+**HodgeGuard** is a Zero-LLM circuit-breaker MCP client for autonomous coding agents (OpenCode, Claude Code, Cursor, LangGraph) that helps detect non-convergent `edit -> test -> fail` loops while hashing step/state identifiers locally before calling the cloud service.
 
-**HodgeGuard** is a **0.1ms, Zero-LLM Circuit-Breaker** for autonomous coding agents (OpenCode, Claude Code, Cursor, LangGraph). It prevents agents from getting trapped in non-convergent `edit -> test -> fail` loops, saving you money on runaway API token burn.
+## Installation
 
----
-
-## 🚀 Installation
-
-Install the package globally using `pipx` or `pip`:
+Install using `pipx` or `pip`:
 
 ```bash
 pipx install hodgeguard-mcp
 ```
 
----
+## Configuration
 
-## ⚙️ Configuration
-
-To use HodgeGuard with your Model Context Protocol (MCP) client, add it to your MCP configuration file (`~/.config/opencode/config.json` or `.opencode.json`):
+Add `hodgeguard-mcp` to your MCP configuration file:
 
 ```json
 {
@@ -27,14 +20,15 @@ To use HodgeGuard with your Model Context Protocol (MCP) client, add it to your 
     "hodgeguard": {
       "command": "hodgeguard-mcp",
       "env": {
-        "HODGEGUARD_API_URL": "[https://hodgeguard-brain.onrender.com](https://hodgeguard-brain.onrender.com)",
-        "HODGEGUARD_API_KEY": "hg_free_demo123"
+        "HODGEGUARD_API_URL": "https://hodgeguard-cloud-brain.onrender.com"
       }
     }
   }
 }
 ```
 
-### Support Development (Buy Me a Coffee)
-HodgeGuard provisions a free tier locally automatically. To unlock unlimited Pro usage and support the developer, buy me a coffee!
-☕ **[Buy Me a Coffee — HodgeGuard Pro](https://buymeacoffee.com/zshor)**
+If `HODGEGUARD_API_KEY` is not set, the client automatically generates a local anonymous key (`hg_anon_...`) for the free trial quota. Set `HODGEGUARD_API_KEY` when using a Pro license key.
+
+## HodgeGuard Pro License
+
+Get HodgeGuard Pro License Key: https://buymeacoffee.com/zshor/e/597895

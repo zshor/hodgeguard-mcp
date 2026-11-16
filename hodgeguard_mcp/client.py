@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
 """
 PUBLIC OPEN-SOURCE MCP CLIENT: hodgeguard-mcp
-Contains ZERO proprietary math.
-- Auto-provisions a zero-friction anonymous trial key (250 free steps) per machine.
-- Hashes tool names, targets, and state fingerprints locally via SHA-256 (100% Zero-Knowledge Privacy).
+- Auto-provisions a machine-bound anonymous key (hg_anon_<hash>) when HODGEGUARD_API_KEY is unset.
+- Hashes tool/target and state fingerprints locally via SHA-256 over MCP stdio JSON-RPC.
+- Pro license shop: https://buymeacoffee.com/zshor/e/597895
 """
+
 import hashlib
 import json
 import os
 import platform
 import sys
-import urllib.request
 import urllib.error
+import urllib.request
 import uuid
 from typing import Optional
 
-API_URL = os.environ.get("HODGEGUARD_API_URL", "https://hodgeguard-cloud-brain.onrender.com")
+DEFAULT_API_URL = "https://hodgeguard-cloud-brain.onrender.com"
+API_URL = os.environ.get("HODGEGUARD_API_URL", DEFAULT_API_URL).rstrip("/")
+SHOP_URL = "https://buymeacoffee.com/zshor/e/597895"
 
 
 def get_default_anon_key() -> str:
@@ -24,14 +27,14 @@ def get_default_anon_key() -> str:
     return f"hg_anon_{digest}"
 
 
-API_KEY = os.environ.get("HODGEGUARD_API_KEY", get_default_anon_key())
+API_KEY = os.environ.get("HODGEGUARD_API_KEY") or get_default_anon_key()
 
 TOOLS = [
     {
         "name": "hodgeguard_check_step",
         "description": (
             "Call before or after executing a shell/edit tool to verify the agent is not "
-            "trapped in a non-convergent edit-test-fail livelock. Zero-knowledge SHA-256 privacy."
+            "trapped in a non-convergent edit-test-fail livelock. Local SHA-256 privacy."
         ),
         "inputSchema": {
             "type": "object",
@@ -65,23 +68,39 @@ def call_cloud_brain(endpoint: str, payload: dict) -> dict:
         headers={
             "Content-Type": "application/json",
             "X-HodgeGuard-Key": API_KEY,
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) HodgeGuard-MCP/0.2.1",
+            "User-Agent": "HodgeGuard-MCP/0.2.2",
         },
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=10.0) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        with urllib.request.urlopen(req, timeout=25.0) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            return json.loads(raw) if raw.strip() else {"status": "OK", "halted": False}
     except urllib.error.HTTPError as e:
-        return json.loads(e.read().decode("utf-8"))
+        raw = e.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+        return {
+            "status": f"HTTP_{e.code}",
+            "halted": False,
+            "recommendation": f"Cloud Brain returned HTTP {e.code}. Upgrade at {SHOP_URL}",
+        }
     except Exception as exc:
-        return {"status": "ERROR", "halted": False, "recommendation": f"Cloud Brain unreachable: {exc}"}
+        return {
+            "status": "ERROR",
+            "halted": False,
+            "recommendation": f"Cloud Brain unreachable: {exc}",
+        }
 
 
 def handle_rpc(request: dict) -> Optional[dict]:
     req_id = request.get("id")
     method = request.get("method", "")
-    params = request.get("params", {})
+    params = request.get("params") or {}
 
     if method == "initialize":
         return {
@@ -90,23 +109,26 @@ def handle_rpc(request: dict) -> Optional[dict]:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "hodgeguard-mcp", "version": "0.2.1"},
+                "serverInfo": {"name": "hodgeguard-mcp", "version": "0.2.2"},
             },
         }
-    elif method == "notifications/initialized":
+    if method == "notifications/initialized":
         return None
-    elif method == "tools/list":
+    if method == "tools/list":
         return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOLS}}
-    elif method == "tools/call":
+    if method == "tools/call":
         name = params.get("name")
-        args = params.get("arguments", {})
+        args = params.get("arguments") or {}
         if name == "hodgeguard_check_step":
-            canonical_v = f"{args.get('tool_name', '').lower()}::{args.get('target', '')}"
-            cloud_resp = call_cloud_brain("/v1/step", {
-                "vertex_hash": sha256_short(canonical_v),
-                "state_hash": sha256_short(args.get("state_fingerprint", "")),
-                "verified_progress": bool(args.get("verified_progress", False)),
-            })
+            canonical_v = f"{str(args.get('tool_name', '')).lower()}::{args.get('target', '')}"
+            cloud_resp = call_cloud_brain(
+                "/v1/step",
+                {
+                    "vertex_hash": sha256_short(canonical_v),
+                    "state_hash": sha256_short(str(args.get("state_fingerprint", ""))),
+                    "verified_progress": bool(args.get("verified_progress", False)),
+                },
+            )
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
@@ -115,15 +137,20 @@ def handle_rpc(request: dict) -> Optional[dict]:
                     "isError": bool(cloud_resp.get("halted", False)),
                 },
             }
-        elif name == "hodgeguard_reset":
+        if name == "hodgeguard_reset":
             cloud_resp = call_cloud_brain("/v1/reset", {})
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "result": {"content": [{"type": "text", "text": json.dumps(cloud_resp)}]},
             }
+
     if req_id is not None:
-        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"Method not found: {method}"}}
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": -32601, "message": f"Method not found: {method}"},
+        }
     return None
 
 
@@ -134,12 +161,23 @@ def main():
             continue
         try:
             req = json.loads(line)
+            if not isinstance(req, dict):
+                raise ValueError("JSON-RPC message must be an object")
             resp = handle_rpc(req)
             if resp is not None:
                 sys.stdout.write(json.dumps(resp) + "\n")
                 sys.stdout.flush()
         except Exception as exc:
-            sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": str(exc)}}) + "\n")
+            sys.stdout.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": -32700, "message": str(exc)},
+                    }
+                )
+                + "\n"
+            )
             sys.stdout.flush()
 
 
