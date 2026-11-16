@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import urllib.error
@@ -20,6 +21,27 @@ from typing import Optional
 DEFAULT_API_URL = "https://hodgeguard-cloud-brain.onrender.com"
 API_URL = os.environ.get("HODGEGUARD_API_URL", DEFAULT_API_URL).rstrip("/")
 SHOP_URL = "https://buymeacoffee.com/zshor/e/597895"
+
+SHELL_LOOP_PATTERNS = [
+    re.compile(r"\bfor\s+[a-zA-Z_][a-zA-Z0-9_]*\s+in\b", re.IGNORECASE),
+    re.compile(r"\bwhile\s+", re.IGNORECASE),
+    re.compile(r"\buntil\s+", re.IGNORECASE),
+]
+
+
+def has_shell_loop_construct(command: str) -> bool:
+    if not command or not command.strip():
+        return False
+    if any(pattern.search(command) for pattern in SHELL_LOOP_PATTERNS):
+        return True
+    # Also detect repeated semicolon/&& chains invoking the same command token 3+ times
+    parts = [p.strip() for p in re.split(r"(?:&&|\|\||;)", command) if p.strip()]
+    if len(parts) >= 3:
+        cmds = [p.split()[0].lower() for p in parts if p.split()]
+        for cmd in set(cmds):
+            if cmds.count(cmd) >= 3:
+                return True
+    return False
 
 
 def get_default_anon_key() -> str:
@@ -80,7 +102,7 @@ def call_cloud_brain(endpoint: str, payload: dict) -> dict:
         headers={
             "Content-Type": "application/json",
             "X-HodgeGuard-Key": API_KEY,
-            "User-Agent": "HodgeGuard-MCP/0.2.2",
+            "User-Agent": "HodgeGuard-MCP/0.2.3",
         },
         method="POST",
     )
@@ -121,7 +143,7 @@ def handle_rpc(request: dict) -> Optional[dict]:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "hodgeguard-mcp", "version": "0.2.2"},
+                "serverInfo": {"name": "hodgeguard-mcp", "version": "0.2.3"},
             },
         }
     if method == "notifications/initialized":
@@ -131,7 +153,7 @@ def handle_rpc(request: dict) -> Optional[dict]:
     if method == "tools/call":
         name = params.get("name")
         args = params.get("arguments") or {}
-        
+
         if name == "hodgeguard_check_step":
             canonical_v = f"{str(args.get('tool_name', '')).lower()}::{args.get('target', '')}"
             cloud_resp = call_cloud_brain(
@@ -150,7 +172,7 @@ def handle_rpc(request: dict) -> Optional[dict]:
                     "isError": bool(cloud_resp.get("halted", False)),
                 },
             }
-            
+
         if name == "hodgeguard_reset":
             cloud_resp = call_cloud_brain("/v1/reset", {})
             return {
@@ -158,39 +180,61 @@ def handle_rpc(request: dict) -> Optional[dict]:
                 "id": req_id,
                 "result": {"content": [{"type": "text", "text": json.dumps(cloud_resp)}]},
             }
-            
+
         if name == "hg_bash":
             command = args.get("command", "")
             target = command.strip().split()[0] if command.strip() else "empty_cmd"
             vertex_str = f"hg_bash::{target}"
-            
+            loop_detected = has_shell_loop_construct(command)
+            state_input = f"{command}::LOOP_DETECTED" if loop_detected else command
+
             cloud_resp = call_cloud_brain(
                 "/v1/step",
                 {
                     "vertex_hash": sha256_short(vertex_str),
-                    "state_hash": sha256_short(command),
+                    "state_hash": sha256_short(state_input),
                     "verified_progress": False,
                 },
             )
-            
+
+            # Apply a penalty step on the manifold if a shell loop construct is embedded
+            if loop_detected and not cloud_resp.get("halted"):
+                cloud_resp = call_cloud_brain(
+                    "/v1/step",
+                    {
+                        "vertex_hash": sha256_short(vertex_str),
+                        "state_hash": sha256_short(state_input),
+                        "verified_progress": False,
+                    },
+                )
+
             if cloud_resp.get("halted"):
                 recommendation = cloud_resp.get("recommendation", "Livelock loop detected.")
+                loop_note = " (Shell loop construct detected inside command.)" if loop_detected else ""
                 return {
                     "jsonrpc": "2.0",
                     "id": req_id,
                     "result": {
-                        "content": [{"type": "text", "text": f"🛑 HODGEGUARD BLOCKED: {recommendation}\nYou are repeating the exact same command or hit a limit. Stop and change your approach."}],
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    f"🛑 HODGEGUARD BLOCKED: {recommendation}{loop_note}\n"
+                                    "You are repeating the exact same command or hit a limit. Stop and change your approach."
+                                ),
+                            }
+                        ],
                         "isError": True,
                     },
                 }
-                
+
             try:
                 result = subprocess.run(
                     command,
                     shell=True,
                     capture_output=True,
                     text=True,
-                    timeout=120
+                    timeout=120,
                 )
                 output = ""
                 if result.stdout:
@@ -202,7 +246,7 @@ def handle_rpc(request: dict) -> Optional[dict]:
                 final_output = "🛑 COMMAND TIMED OUT after 120 seconds."
             except Exception as e:
                 final_output = f"🛑 EXECUTION ERROR: {str(e)}"
-                
+
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
