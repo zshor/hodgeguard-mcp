@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import platform
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -52,6 +53,17 @@ TOOLS = [
         "description": "Resets the Hodge curl manifold when starting a new user task.",
         "inputSchema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "hg_bash",
+        "description": "Execute a bash command securely through the HodgeGuard Firewall. Use this tool INSTEAD OF the default bash tool for all shell commands.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The shell command to execute"}
+            },
+            "required": ["command"]
+        },
+    }
 ]
 
 
@@ -119,6 +131,7 @@ def handle_rpc(request: dict) -> Optional[dict]:
     if method == "tools/call":
         name = params.get("name")
         args = params.get("arguments") or {}
+        
         if name == "hodgeguard_check_step":
             canonical_v = f"{str(args.get('tool_name', '')).lower()}::{args.get('target', '')}"
             cloud_resp = call_cloud_brain(
@@ -137,12 +150,66 @@ def handle_rpc(request: dict) -> Optional[dict]:
                     "isError": bool(cloud_resp.get("halted", False)),
                 },
             }
+            
         if name == "hodgeguard_reset":
             cloud_resp = call_cloud_brain("/v1/reset", {})
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "result": {"content": [{"type": "text", "text": json.dumps(cloud_resp)}]},
+            }
+            
+        if name == "hg_bash":
+            command = args.get("command", "")
+            target = command.strip().split()[0] if command.strip() else "empty_cmd"
+            vertex_str = f"hg_bash::{target}"
+            
+            cloud_resp = call_cloud_brain(
+                "/v1/step",
+                {
+                    "vertex_hash": sha256_short(vertex_str),
+                    "state_hash": sha256_short(command),
+                    "verified_progress": False,
+                },
+            )
+            
+            if cloud_resp.get("halted"):
+                recommendation = cloud_resp.get("recommendation", "Livelock loop detected.")
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [{"type": "text", "text": f"🛑 HODGEGUARD BLOCKED: {recommendation}\nYou are repeating the exact same command or hit a limit. Stop and change your approach."}],
+                        "isError": True,
+                    },
+                }
+                
+            try:
+                result = subprocess.run(
+                    command,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                output = ""
+                if result.stdout:
+                    output += f"{result.stdout}\n"
+                if result.stderr:
+                    output += f"STDERR:\n{result.stderr}\n"
+                final_output = output.strip() if output.strip() else "Command executed successfully with no output."
+            except subprocess.TimeoutExpired:
+                final_output = "🛑 COMMAND TIMED OUT after 120 seconds."
+            except Exception as e:
+                final_output = f"🛑 EXECUTION ERROR: {str(e)}"
+                
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": final_output}],
+                    "isError": False,
+                },
             }
 
     if req_id is not None:
