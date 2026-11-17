@@ -3,6 +3,7 @@
 PUBLIC OPEN-SOURCE MCP CLIENT: hodgeguard-mcp
 - Auto-provisions a machine-bound anonymous key (hg_anon_<hash>) when HODGEGUARD_API_KEY is unset.
 - Extracts invariant target/command signatures and hashes state locally via SHA-256 over MCP stdio JSON-RPC.
+- Reports factual loops_stopped alongside configurable estimated token savings (HODGEGUARD_EST_TOKENS_PER_HALT).
 - Pro license shop: https://buymeacoffee.com/zshor/e/597895
 """
 
@@ -22,6 +23,7 @@ from typing import Optional
 DEFAULT_API_URL = "https://hodgeguard-cloud-brain.onrender.com"
 API_URL = os.environ.get("HODGEGUARD_API_URL", DEFAULT_API_URL).rstrip("/")
 SHOP_URL = "https://buymeacoffee.com/zshor/e/597895"
+EST_TOKENS_PER_HALT = int(os.environ.get("HODGEGUARD_EST_TOKENS_PER_HALT", "1500"))
 
 SHELL_LOOP_PATTERNS = [
     re.compile(r"\bfor\s+[a-zA-Z_][a-zA-Z0-9_]*\s+in\b", re.IGNORECASE),
@@ -69,10 +71,6 @@ def canonical_verb(command: str) -> str:
 
 
 def extract_invariant_signature(command: str) -> tuple[str, str]:
-    """
-    Returns (canonical_vertex_label, normalized_command) invariant to common
-    runner prefixes, quote/whitespace variations, and target paths.
-    """
     norm_cmd = normalize_whitespace(command)
     verb = canonical_verb(norm_cmd)
     targets = PATH_OR_ENDPOINT_RE.findall(norm_cmd)
@@ -135,13 +133,15 @@ def sha256_short(raw: str) -> str:
 
 
 def call_cloud_brain(endpoint: str, payload: dict) -> dict:
+    if endpoint == "/v1/step":
+        payload["est_tokens_per_halt"] = EST_TOKENS_PER_HALT
     req = urllib.request.Request(
         f"{API_URL}{endpoint}",
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
             "X-HodgeGuard-Key": API_KEY,
-            "User-Agent": "HodgeGuard-MCP/0.3.0",
+            "User-Agent": "HodgeGuard-MCP/0.3.2",
         },
         method="POST",
     )
@@ -175,6 +175,7 @@ class LocalTrajectoryTracker:
 
     def __init__(self, window_size: int = 8):
         self.recent: deque[str] = deque(maxlen=window_size)
+        self.local_halts: int = 0
 
     def reset(self) -> None:
         self.recent.clear()
@@ -185,6 +186,19 @@ class LocalTrajectoryTracker:
 
 
 TRACKER = LocalTrajectoryTracker()
+
+
+def format_halt_recommendation(cloud_resp: dict) -> str:
+    rec = str(cloud_resp.get("recommendation", "Livelock loop detected."))
+    if "Saved total: $" in rec:
+        TRACKER.local_halts += 1
+        est_saved = TRACKER.local_halts * EST_TOKENS_PER_HALT
+        rec = re.sub(
+            r"\[Saved total:\s*\$[0-9.,]+\]",
+            f"[Loops stopped: {TRACKER.local_halts} | Est. tokens saved: ~{est_saved:,}]",
+            rec,
+        )
+    return rec
 
 
 def handle_rpc(request: dict) -> Optional[dict]:
@@ -199,7 +213,7 @@ def handle_rpc(request: dict) -> Optional[dict]:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "hodgeguard-mcp", "version": "0.3.0"},
+                "serverInfo": {"name": "hodgeguard-mcp", "version": "0.3.2"},
             },
         }
     if method == "notifications/initialized":
@@ -274,7 +288,6 @@ def handle_rpc(request: dict) -> Optional[dict]:
                 },
             )
 
-            # Extra manifold step penalty when a shell loop or repeated window cycle appears
             if (loop_detected or window_hits >= 3) and not cloud_resp.get("halted"):
                 cloud_resp = call_cloud_brain(
                     "/v1/step",
@@ -286,7 +299,7 @@ def handle_rpc(request: dict) -> Optional[dict]:
                 )
 
             if cloud_resp.get("halted"):
-                recommendation = cloud_resp.get("recommendation", "Livelock loop detected.")
+                recommendation = format_halt_recommendation(cloud_resp)
                 notes = []
                 if loop_detected:
                     notes.append("Shell loop construct detected.")
