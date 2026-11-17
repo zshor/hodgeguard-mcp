@@ -215,6 +215,9 @@ def handle_rpc(request: dict) -> Optional[dict]:
         args = params.get("arguments") or {}
 
         if name == "hodgeguard_check_step":
+            verified = bool(args.get("verified_progress", False))
+            if verified:
+                TRACKER.reset()
             target_norm, _ = extract_invariant_signature(str(args.get("target", "")))
             canonical_v = f"{str(args.get('tool_name', '')).lower()}::{target_norm}"
             window_hits = TRACKER.observe(canonical_v)
@@ -227,7 +230,7 @@ def handle_rpc(request: dict) -> Optional[dict]:
                 {
                     "vertex_hash": sha256_short(canonical_v),
                     "state_hash": sha256_short(state_raw),
-                    "verified_progress": bool(args.get("verified_progress", False)),
+                    "verified_progress": verified,
                 },
             )
             return {
