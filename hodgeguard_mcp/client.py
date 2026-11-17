@@ -2,10 +2,11 @@
 """
 PUBLIC OPEN-SOURCE MCP CLIENT: hodgeguard-mcp
 - Auto-provisions a machine-bound anonymous key (hg_anon_<hash>) when HODGEGUARD_API_KEY is unset.
-- Hashes tool/target and state fingerprints locally via SHA-256 over MCP stdio JSON-RPC.
+- Extracts invariant target/command signatures and hashes state locally via SHA-256 over MCP stdio JSON-RPC.
 - Pro license shop: https://buymeacoffee.com/zshor/e/597895
 """
 
+from collections import deque
 import hashlib
 import json
 import os
@@ -28,20 +29,58 @@ SHELL_LOOP_PATTERNS = [
     re.compile(r"\buntil\s+", re.IGNORECASE),
 ]
 
+WRAPPER_TOKENS = {"env", "sudo", "command", "nohup", "time", "nice"}
+PATH_OR_ENDPOINT_RE = re.compile(
+    r"(?:https?://[^\s\"';&|]+|/[A-Za-z0-9_./-]+|localhost:\d+|127\.0\.0\.1:\d+)"
+)
+
 
 def has_shell_loop_construct(command: str) -> bool:
     if not command or not command.strip():
         return False
     if any(pattern.search(command) for pattern in SHELL_LOOP_PATTERNS):
         return True
-    # Also detect repeated semicolon/&& chains invoking the same command token 3+ times
     parts = [p.strip() for p in re.split(r"(?:&&|\|\||;)", command) if p.strip()]
     if len(parts) >= 3:
-        cmds = [p.split()[0].lower() for p in parts if p.split()]
+        cmds = [canonical_verb(p) for p in parts if canonical_verb(p)]
         for cmd in set(cmds):
             if cmds.count(cmd) >= 3:
                 return True
     return False
+
+
+def normalize_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def canonical_verb(command: str) -> str:
+    tokens = normalize_whitespace(command).split()
+    idx = 0
+    while idx < len(tokens):
+        tok = tokens[idx].strip("'\"").lower()
+        if tok in WRAPPER_TOKENS:
+            idx += 1
+            continue
+        if tok in {"bash", "sh", "zsh", "dash"} and idx + 1 < len(tokens) and tokens[idx + 1] == "-c":
+            idx += 2
+            continue
+        return tok
+    return "empty_cmd"
+
+
+def extract_invariant_signature(command: str) -> tuple[str, str]:
+    """
+    Returns (canonical_vertex_label, normalized_command) invariant to common
+    runner prefixes, quote/whitespace variations, and target paths.
+    """
+    norm_cmd = normalize_whitespace(command)
+    verb = canonical_verb(norm_cmd)
+    targets = PATH_OR_ENDPOINT_RE.findall(norm_cmd)
+    cleaned_targets = [t.strip("'\"").rstrip("/") or "/" for t in targets]
+    if cleaned_targets:
+        primary_target = "|".join(dict.fromkeys(cleaned_targets[:2]))
+        return f"target::{primary_target}", norm_cmd
+    return f"verb::{verb}", norm_cmd
 
 
 def get_default_anon_key() -> str:
@@ -83,9 +122,9 @@ TOOLS = [
             "properties": {
                 "command": {"type": "string", "description": "The shell command to execute"}
             },
-            "required": ["command"]
+            "required": ["command"],
         },
-    }
+    },
 ]
 
 
@@ -102,7 +141,7 @@ def call_cloud_brain(endpoint: str, payload: dict) -> dict:
         headers={
             "Content-Type": "application/json",
             "X-HodgeGuard-Key": API_KEY,
-            "User-Agent": "HodgeGuard-MCP/0.2.3",
+            "User-Agent": "HodgeGuard-MCP/0.3.0",
         },
         method="POST",
     )
@@ -131,6 +170,23 @@ def call_cloud_brain(endpoint: str, payload: dict) -> dict:
         }
 
 
+class LocalTrajectoryTracker:
+    """Tracks recent invariant vertices locally to detect short 2-cycles / 3-cycles."""
+
+    def __init__(self, window_size: int = 8):
+        self.recent: deque[str] = deque(maxlen=window_size)
+
+    def reset(self) -> None:
+        self.recent.clear()
+
+    def observe(self, vertex_sig: str) -> int:
+        self.recent.append(vertex_sig)
+        return sum(1 for v in self.recent if v == vertex_sig)
+
+
+TRACKER = LocalTrajectoryTracker()
+
+
 def handle_rpc(request: dict) -> Optional[dict]:
     req_id = request.get("id")
     method = request.get("method", "")
@@ -143,11 +199,15 @@ def handle_rpc(request: dict) -> Optional[dict]:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "hodgeguard-mcp", "version": "0.2.3"},
+                "serverInfo": {"name": "hodgeguard-mcp", "version": "0.3.0"},
             },
         }
     if method == "notifications/initialized":
         return None
+    if method == "resources/list":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"resources": []}}
+    if method == "prompts/list":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"prompts": []}}
     if method == "tools/list":
         return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOLS}}
     if method == "tools/call":
@@ -155,12 +215,18 @@ def handle_rpc(request: dict) -> Optional[dict]:
         args = params.get("arguments") or {}
 
         if name == "hodgeguard_check_step":
-            canonical_v = f"{str(args.get('tool_name', '')).lower()}::{args.get('target', '')}"
+            target_norm, _ = extract_invariant_signature(str(args.get("target", "")))
+            canonical_v = f"{str(args.get('tool_name', '')).lower()}::{target_norm}"
+            window_hits = TRACKER.observe(canonical_v)
+            state_raw = str(args.get("state_fingerprint", ""))
+            if window_hits >= 3:
+                state_raw = f"{state_raw}::WINDOW_CYCLE_{window_hits}"
+
             cloud_resp = call_cloud_brain(
                 "/v1/step",
                 {
                     "vertex_hash": sha256_short(canonical_v),
-                    "state_hash": sha256_short(str(args.get("state_fingerprint", ""))),
+                    "state_hash": sha256_short(state_raw),
                     "verified_progress": bool(args.get("verified_progress", False)),
                 },
             )
@@ -174,6 +240,7 @@ def handle_rpc(request: dict) -> Optional[dict]:
             }
 
         if name == "hodgeguard_reset":
+            TRACKER.reset()
             cloud_resp = call_cloud_brain("/v1/reset", {})
             return {
                 "jsonrpc": "2.0",
@@ -183,10 +250,17 @@ def handle_rpc(request: dict) -> Optional[dict]:
 
         if name == "hg_bash":
             command = args.get("command", "")
-            target = command.strip().split()[0] if command.strip() else "empty_cmd"
-            vertex_str = f"hg_bash::{target}"
-            loop_detected = has_shell_loop_construct(command)
-            state_input = f"{command}::LOOP_DETECTED" if loop_detected else command
+            invariant_target, norm_cmd = extract_invariant_signature(command)
+            vertex_str = f"hg_bash::{invariant_target}"
+            loop_detected = has_shell_loop_construct(norm_cmd)
+            window_hits = TRACKER.observe(vertex_str)
+
+            state_parts = [norm_cmd]
+            if loop_detected:
+                state_parts.append("LOOP_DETECTED")
+            if window_hits >= 3:
+                state_parts.append(f"WINDOW_CYCLE_{window_hits}")
+            state_input = "::".join(state_parts)
 
             cloud_resp = call_cloud_brain(
                 "/v1/step",
@@ -197,8 +271,8 @@ def handle_rpc(request: dict) -> Optional[dict]:
                 },
             )
 
-            # Apply a penalty step on the manifold if a shell loop construct is embedded
-            if loop_detected and not cloud_resp.get("halted"):
+            # Extra manifold step penalty when a shell loop or repeated window cycle appears
+            if (loop_detected or window_hits >= 3) and not cloud_resp.get("halted"):
                 cloud_resp = call_cloud_brain(
                     "/v1/step",
                     {
@@ -210,7 +284,12 @@ def handle_rpc(request: dict) -> Optional[dict]:
 
             if cloud_resp.get("halted"):
                 recommendation = cloud_resp.get("recommendation", "Livelock loop detected.")
-                loop_note = " (Shell loop construct detected inside command.)" if loop_detected else ""
+                notes = []
+                if loop_detected:
+                    notes.append("Shell loop construct detected.")
+                if window_hits >= 3:
+                    notes.append(f"Repeated target activity ({window_hits}x in recent window).")
+                detail = f" ({' '.join(notes)})" if notes else ""
                 return {
                     "jsonrpc": "2.0",
                     "id": req_id,
@@ -219,8 +298,8 @@ def handle_rpc(request: dict) -> Optional[dict]:
                             {
                                 "type": "text",
                                 "text": (
-                                    f"🛑 HODGEGUARD BLOCKED: {recommendation}{loop_note}\n"
-                                    "You are repeating the exact same command or hit a limit. Stop and change your approach."
+                                    f"🛑 HODGEGUARD BLOCKED: {recommendation}{detail}\n"
+                                    "You are repeating actions on the same target or hit a limit. Stop and change your approach."
                                 ),
                             }
                         ],
