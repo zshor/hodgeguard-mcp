@@ -141,7 +141,7 @@ def call_cloud_brain(endpoint: str, payload: dict) -> dict:
         headers={
             "Content-Type": "application/json",
             "X-HodgeGuard-Key": API_KEY,
-            "User-Agent": "HodgeGuard-MCP/0.3.2",
+            "User-Agent": "HodgeGuard-MCP/0.3.3",
         },
         method="POST",
     )
@@ -213,7 +213,7 @@ def handle_rpc(request: dict) -> Optional[dict]:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "hodgeguard-mcp", "version": "0.3.2"},
+                "serverInfo": {"name": "hodgeguard-mcp", "version": "0.3.3"},
             },
         }
     if method == "notifications/initialized":
