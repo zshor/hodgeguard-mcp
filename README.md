@@ -1,4 +1,5 @@
 # 🛡️ hodgeguard-mcp
+[![Listed on mcpservers.org](https://mcpservers.org/badge.svg)](https://mcpservers.org/servers/zshor/hodgeguard-mcp)
 
 **Zero-Knowledge Topological Circuit-Breaker for Autonomous Coding Agents (OpenCode, Claude Code, Cursor)**
 
